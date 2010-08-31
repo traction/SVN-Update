@@ -1,0 +1,404 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AMApplicationBuild</key>
+	<string>247</string>
+	<key>AMApplicationVersion</key>
+	<string>2.1</string>
+	<key>AMDocumentVersion</key>
+	<string>2</string>
+	<key>actions</key>
+	<array>
+		<dict>
+			<key>action</key>
+			<dict>
+				<key>AMAccepts</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Optional</key>
+					<true/>
+					<key>Types</key>
+					<array>
+						<string>com.apple.cocoa.string</string>
+					</array>
+				</dict>
+				<key>AMActionVersion</key>
+				<string>2.0.1</string>
+				<key>AMParameterProperties</key>
+				<dict>
+					<key>COMMAND_STRING</key>
+					<dict/>
+					<key>CheckedForUserDefaultShell</key>
+					<dict/>
+					<key>inputMethod</key>
+					<dict/>
+					<key>shell</key>
+					<dict/>
+					<key>source</key>
+					<dict/>
+				</dict>
+				<key>AMProvides</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Types</key>
+					<array>
+						<string>com.apple.cocoa.string</string>
+					</array>
+				</dict>
+				<key>ActionBundlePath</key>
+				<string>/System/Library/Automator/Run Shell Script.action</string>
+				<key>ActionName</key>
+				<string>Run Shell Script</string>
+				<key>ActionParameters</key>
+				<dict>
+					<key>COMMAND_STRING</key>
+					<string>CONF = File.expand_path('~/Library/Preferences/com.tractionco.svn_update')
+LOG_FILE = File.expand_path('~/Library/Logs/com.tractionco.svn_update.log')
+UA_FILE = File.expand_path('~/Library/LaunchAgents/com.tractionco.svn_update.plist')
+
+def log(s)
+	@log ||= File.open(LOG_FILE, 'a')
+	@log.write("#{Time.now.to_s}: #{s.strip}\n")
+end
+
+def svn_dirs
+	dirs = []
+	if (File.exist?(CONF) &amp;&amp; File.readable?(CONF))
+		File.open(CONF) do |f|
+			dirs = f.read.split("\n")
+		end
+	end
+	dirs
+end
+
+def svn_update
+	log("Starting SVN update...")
+	dirs = svn_dirs
+	updates = []
+	if dirs.empty?
+		log("Unable to read svn update configuration")
+	else
+		dirs.each do |svn_path|
+			stat = shell('svn', 'up', svn_path)
+			stat = "#{svn_path}:\n#{stat}" unless (stat =~ /^Skipped /)
+			updates &lt;&lt; stat
+		end
+	end
+	updates.each {|u| log(u)}
+
+	notification("Subversion Update", updates.join("\n")) unless updates.empty?
+
+	# truncate log to a reasonable size
+	# someday...
+end
+
+def setup_user_agent
+	unless File.exist?(UA_FILE)
+		log("Setting up user agent config...")
+		path = File.expand_path('~/Applications/SVN Update.app/Contents/MacOS/Application Stub')
+		File.open(UA_FILE, 'w') do |f|
+			f.write &lt;&lt;-EOD
+&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+	&lt;key&gt;Label&lt;/key&gt;
+	&lt;string&gt;com.tractionco.svn_update&lt;/string&gt;
+	&lt;key&gt;Program&lt;/key&gt;
+	&lt;string&gt;#{path}&lt;/string&gt;
+	&lt;key&gt;RunAtLoad&lt;/key&gt;
+	&lt;true/&gt;
+	&lt;key&gt;StartInterval&lt;/key&gt;
+	&lt;integer&gt;900&lt;/integer&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;
+EOD
+		end
+		log('launchctl result: ' + shell('launchctl', 'load', UA_FILE))
+		note = "SVN Update has been set up to run every 15 minutes. Drop folders on the SVN Update application icon to add them to the list of folders that will be updated."
+		notification("Installation Complete", note, true)
+	end
+end
+
+def add_dirs(dropped)
+	log("Adding files to configuration: #{dropped.join(', ')}")
+	dirs = svn_dirs
+	bad_drops = []
+	dropped.each do |d|
+		if (File.directory?(d))
+			dirs &lt;&lt; d
+		else
+			bad_drops &lt;&lt; d
+		end
+	end
+	dirs.uniq!
+	File.open(CONF, 'w') do |f|
+		f.write dirs.join("\n")
+	end
+
+	ttl = "Subversion Update Configured"
+	msg = "Monitoring folders:\n#{dirs.uniq.join("\n")}"
+
+	unless bad_drops.empty?
+		msg += "\nIgnored files:\n#{bad_drops.join("\n")}"
+	end
+
+	notification(ttl, msg, true)
+end
+
+def notification(ttl, msg, important=false)
+	if File.exist?('/usr/local/bin/growlnotify')
+		if important
+			shell('/usr/local/bin/growlnotify', '-s', '-t', ttl, '-m', msg, '-a', 'SVN Update.app')
+		else
+			shell('/usr/local/bin/growlnotify', '-t', ttl, '-m', msg, '-a', 'SVN Update.app')
+		end
+	elsif as_fallback
+		`osascript -e 'tell app "System Events" to activate'`
+		`osascript -e 'tell app "System Events" to display dialog "#{msg}" buttons "OK" default button 1 with title "#{ttl}" with icon note'`
+	end
+end
+
+def shell(*cmd_parts)
+	# this would work if the escape library was standard
+	# `#{Escape.shell_command(cmd_parts)}`
+	s = cmd_parts.map {|word| shell_escape(word) }.join(' ')
+	`#{s}`
+end
+
+def shell_escape(str)
+	if str.empty?
+		"''"
+	elsif %r{\A[0-9A-Za-z+,./:=@_-]+\z} =~ str
+		str.dup
+	else
+		result = ''
+		str.scan(/('+)|[^']+/) {
+			if $1
+				result &lt;&lt; %q{\'} * $1.length
+			else
+				result &lt;&lt; "'#{$&amp;}'"
+			end
+		}
+		result
+	end
+end
+
+if ARGV.empty?
+	# make sure this is set up as a user agent
+	setup_user_agent
+	# run svn update
+	svn_update
+else
+	# add folders to config
+	add_dirs(ARGV)
+end
+</string>
+					<key>CheckedForUserDefaultShell</key>
+					<true/>
+					<key>inputMethod</key>
+					<integer>1</integer>
+					<key>shell</key>
+					<string>/usr/bin/ruby</string>
+					<key>source</key>
+					<string></string>
+				</dict>
+				<key>Application</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>BundleIdentifier</key>
+				<string>com.apple.RunShellScript</string>
+				<key>CFBundleVersion</key>
+				<string>2.0.1</string>
+				<key>CanShowSelectedItemsWhenRun</key>
+				<false/>
+				<key>CanShowWhenRun</key>
+				<true/>
+				<key>Category</key>
+				<array>
+					<string>AMCategoryUtilities</string>
+				</array>
+				<key>Class Name</key>
+				<string>RunShellScriptAction</string>
+				<key>InputUUID</key>
+				<string>9D952460-A696-411C-B7CD-652314E49C15</string>
+				<key>Keywords</key>
+				<array>
+					<string>Shell</string>
+					<string>Script</string>
+					<string>Command</string>
+					<string>Run</string>
+					<string>Unix</string>
+				</array>
+				<key>OutputUUID</key>
+				<string>C3F41CE9-50FE-4E77-856D-79C37A2DBACE</string>
+				<key>UUID</key>
+				<string>84DC6D75-B267-4FE6-8180-BDD4A6BEFEBD</string>
+				<key>UnlocalizedApplications</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>arguments</key>
+				<dict>
+					<key>0</key>
+					<dict>
+						<key>default value</key>
+						<integer>0</integer>
+						<key>name</key>
+						<string>inputMethod</string>
+						<key>required</key>
+						<string>0</string>
+						<key>type</key>
+						<string>0</string>
+						<key>uuid</key>
+						<string>0</string>
+					</dict>
+					<key>1</key>
+					<dict>
+						<key>default value</key>
+						<string></string>
+						<key>name</key>
+						<string>source</string>
+						<key>required</key>
+						<string>0</string>
+						<key>type</key>
+						<string>0</string>
+						<key>uuid</key>
+						<string>1</string>
+					</dict>
+					<key>2</key>
+					<dict>
+						<key>default value</key>
+						<false/>
+						<key>name</key>
+						<string>CheckedForUserDefaultShell</string>
+						<key>required</key>
+						<string>0</string>
+						<key>type</key>
+						<string>0</string>
+						<key>uuid</key>
+						<string>2</string>
+					</dict>
+					<key>3</key>
+					<dict>
+						<key>default value</key>
+						<string></string>
+						<key>name</key>
+						<string>COMMAND_STRING</string>
+						<key>required</key>
+						<string>0</string>
+						<key>type</key>
+						<string>0</string>
+						<key>uuid</key>
+						<string>3</string>
+					</dict>
+					<key>4</key>
+					<dict>
+						<key>default value</key>
+						<string>/bin/sh</string>
+						<key>name</key>
+						<string>shell</string>
+						<key>required</key>
+						<string>0</string>
+						<key>type</key>
+						<string>0</string>
+						<key>uuid</key>
+						<string>4</string>
+					</dict>
+				</dict>
+				<key>isViewVisible</key>
+				<true/>
+				<key>location</key>
+				<string>377.000000:828.000000</string>
+				<key>nibPath</key>
+				<string>/System/Library/Automator/Run Shell Script.action/Contents/Resources/English.lproj/main.nib</string>
+			</dict>
+			<key>isViewVisible</key>
+			<true/>
+		</dict>
+	</array>
+	<key>connectors</key>
+	<dict/>
+	<key>state</key>
+	<dict>
+		<key>AMLogTabViewSelectedIndex</key>
+		<integer>0</integer>
+		<key>libraryState</key>
+		<dict>
+			<key>actionsMajorSplitViewState</key>
+			<dict>
+				<key>expandedPosition</key>
+				<real>0.0</real>
+				<key>subviewState</key>
+				<array>
+					<string>0.000000, 0.000000, 381.000000, 789.000000, NO</string>
+					<string>0.000000, 790.000000, 381.000000, 239.000000, NO</string>
+				</array>
+			</dict>
+			<key>actionsMinorSplitViewState</key>
+			<dict>
+				<key>expandedPosition</key>
+				<real>0.0</real>
+				<key>subviewState</key>
+				<array>
+					<string>0.000000, 0.000000, 163.000000, 789.000000, NO</string>
+					<string>164.000000, 0.000000, 217.000000, 789.000000, NO</string>
+				</array>
+			</dict>
+			<key>variablesMajorSplitViewState</key>
+			<dict>
+				<key>expandedPosition</key>
+				<real>0.0</real>
+				<key>subviewState</key>
+				<array>
+					<string>0.000000, 0.000000, 350.000000, 555.000000, NO</string>
+					<string>0.000000, 556.000000, 350.000000, 148.000000, NO</string>
+				</array>
+			</dict>
+			<key>variablesMinorSplitViewState</key>
+			<dict>
+				<key>expandedPosition</key>
+				<real>0.0</real>
+				<key>subviewState</key>
+				<array>
+					<string>0.000000, 0.000000, 163.000000, 555.000000, NO</string>
+					<string>164.000000, 0.000000, 186.000000, 555.000000, NO</string>
+				</array>
+			</dict>
+		</dict>
+		<key>majorSplitViewState</key>
+		<dict>
+			<key>expandedPosition</key>
+			<real>0.0</real>
+			<key>subviewState</key>
+			<array>
+				<string>0.000000, 0.000000, 381.000000, 1074.000000, NO</string>
+				<string>382.000000, 0.000000, 754.000000, 1074.000000, NO</string>
+			</array>
+		</dict>
+		<key>minorSplitViewState</key>
+		<dict>
+			<key>expandedPosition</key>
+			<real>0.0</real>
+			<key>subviewState</key>
+			<array>
+				<string>0.000000, 0.000000, 754.000000, 883.000000, NO</string>
+				<string>0.000000, 893.000000, 754.000000, 162.000000, NO</string>
+			</array>
+		</dict>
+		<key>windowFrame</key>
+		<string>{{468, 27}, {1135, 1151}}</string>
+		<key>workflowViewScrollPosition</key>
+		<string>{{0, 0}, {754, 883}}</string>
+	</dict>
+	<key>workflowMetaData</key>
+	<dict>
+		<key>workflowTypeIdentifier</key>
+		<string>com.apple.Automator.application</string>
+	</dict>
+</dict>
+</plist>
